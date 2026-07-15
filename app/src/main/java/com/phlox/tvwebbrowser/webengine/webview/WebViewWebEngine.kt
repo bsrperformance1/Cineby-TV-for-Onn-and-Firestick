@@ -270,6 +270,9 @@ class WebViewWebEngine(val tab: WebTabState) : WebEngine, CursorDrawerDelegate.C
             }
             webView?.visibility = View.VISIBLE
             callback?.onExitFullscreen()
+            webView?.postDelayed({
+                webView?.invalidate()
+            }, 300)
         }
 
         override fun onProgressChanged(newProgress: Int) {

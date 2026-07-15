@@ -108,6 +108,10 @@ import kotlin.system.exitProcess
 open class MainActivity : AppCompatActivity(), ActionBar.Callback {
     companion object {
         private val TAG = MainActivity::class.java.simpleName
+        private const val EXIT_BACK_DELAY_MS = 2000L
+        private const val PAGE_BACK_DELAY_MS = 1500L
+        private const val BACK_DEBOUNCE_MS = 300L
+
         const val VOICE_SEARCH_REQUEST_CODE = 10001
         const val MY_PERMISSIONS_REQUEST_POST_NOTIFICATIONS_ACCESS = 10003
         const val MY_PERMISSIONS_REQUEST_EXTERNAL_STORAGE_ACCESS = 10004
@@ -126,6 +130,10 @@ open class MainActivity : AppCompatActivity(), ActionBar.Callback {
     private lateinit var adblockModel: AdblockModel
     private lateinit var autoUpdateModel: AutoUpdateModel
     private lateinit var uiHandler: Handler
+    private var lastHomeBackPressTime = 0L
+    private var lastPageBackPressTime = 0L
+    private var lastHandledBackEventTime = 0L
+    private var resetToHomeWhenResumed = false
     private var isFullscreen: Boolean = false
     private lateinit var prefs: SharedPreferences
     protected val config = AppContext.provideConfig()
@@ -165,24 +173,33 @@ open class MainActivity : AppCompatActivity(), ActionBar.Callback {
         vb = ActivityMainBinding.inflate(layoutInflater)
         setContentView(vb.root)
 
-        vb.ivMiniatures.visibility = View.INVISIBLE
-        vb.llBottomPanel.visibility = View.INVISIBLE
-        vb.rlActionBar.visibility = View.INVISIBLE
+        vb.ivMiniatures.visibility = View.GONE
+        vb.llBottomPanel.visibility = View.GONE
+        vb.rlActionBar.visibility = View.GONE
         vb.progressBar.visibility = View.GONE
 
         vb.vTabs.listener = tabsListener
 
+        vb.ibAdBlock.visibility = View.GONE
         vb.ibAdBlock.setOnClickListener { toggleAdBlockForTab() }
+        vb.ibPopupBlock.visibility = View.GONE
         vb.ibPopupBlock.setOnClickListener { lifecycleScope.launch(Dispatchers.Main) { showPopupBlockOptions() } }
-        vb.ibHome.setOnClickListener { navigate(settingsModel.homePage) }
+        vb.ibHome.visibility = View.GONE
+        vb.ibHome.setOnClickListener { 
+            navigate(settingsModel.homePage) 
+        }
+        vb.ibBack.visibility = View.GONE
         vb.ibBack.setOnClickListener { navigateBack() }
+        vb.ibForward.visibility = View.GONE
         vb.ibForward.setOnClickListener {
             val tab = tabsModel.currentTab.value ?: return@setOnClickListener
             if (tab.webEngine.canGoForward()) {
                 tab.webEngine.goForward()
             }
         }
+        vb.ibRefresh.visibility = View.GONE
         vb.ibRefresh.setOnClickListener { refresh() }
+        vb.ibCloseTab.visibility = View.GONE
         vb.ibCloseTab.setOnClickListener { tabsModel.currentTab.value?.apply { closeTab(this) } }
 
         vb.vActionBar.callback = this
@@ -242,7 +259,6 @@ open class MainActivity : AppCompatActivity(), ActionBar.Callback {
         onBackPressedDispatcher.addCallback(onBackPressedCallback)
         
         hideMenuOverlay()
-        hideUncoveredLayout()
         
         loadState()
     }
@@ -294,7 +310,8 @@ open class MainActivity : AppCompatActivity(), ActionBar.Callback {
         }
 
         override fun onAddNewTabSelected() {
-            openInNewTab("https://cineby.sc", tabsModel.tabsStates.size)
+            navigate(settingsModel.homePage)
+            hideMenuOverlay()
         }
 
         override fun closeTab(tabState: WebTabState?) = this@MainActivity.closeTab(tabState)
@@ -388,17 +405,80 @@ open class MainActivity : AppCompatActivity(), ActionBar.Callback {
     override fun onUrlInputDone() {
         hideMenuOverlay()
     }
+    private fun isOnCinebyHomePage(): Boolean {
+        val currentUrl = tabsModel.currentTab.value?.url ?: return false
 
+        return try {
+            val currentUri = Uri.parse(currentUrl)
+            val homeUri = Uri.parse(settingsModel.homePage)
+
+            val currentHost = currentUri.host?.removePrefix("www.")
+            val homeHost = homeUri.host?.removePrefix("www.")
+
+            val currentPath = currentUri.path.orEmpty()
+                .trim('/')
+                .lowercase()
+
+            val isHomePath =
+                currentPath.isEmpty() ||
+                currentPath == "home" ||
+                currentPath == "browse"
+
+            currentHost == homeHost && isHomePath
+        } catch (_: Exception) {
+            false
+        }
+    }
     fun navigateBack(goHomeIfNoHistory: Boolean = false) {
-        val currentTab = tabsModel.currentTab.value
-        if (currentTab != null && currentTab.webEngine.canGoBack()) {
+        hideMenuOverlay()
+        vb.rlActionBar.visibility = View.GONE
+        vb.llBottomPanel.visibility = View.GONE
+
+        val currentTab = tabsModel.currentTab.value ?: return
+        val currentTime = System.currentTimeMillis()
+
+        if (currentTime - lastHandledBackEventTime < BACK_DEBOUNCE_MS) {
+            return
+        }
+
+        lastHandledBackEventTime = currentTime
+
+        if (isOnCinebyHomePage()) {
+            lastPageBackPressTime = 0L
+
+            if (currentTime - lastHomeBackPressTime <= EXIT_BACK_DELAY_MS) {
+                finishAndRemoveTask()
+            } else {
+                lastHomeBackPressTime = currentTime
+
+                Toast.makeText(
+                    this,
+                    "Press Back again to exit",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+
+            return
+        }
+
+        lastHomeBackPressTime = 0L
+
+        if (currentTime - lastPageBackPressTime <= PAGE_BACK_DELAY_MS) {
+            lastPageBackPressTime = 0L
+            currentTab.webEngine.loadUrl(settingsModel.homePage)
+            return
+        }
+
+        lastPageBackPressTime = currentTime
+
+        if (currentTab.webEngine.canGoBack()) {
             currentTab.webEngine.goBack()
-        } else if (goHomeIfNoHistory) {
-            navigate(settingsModel.homePage)
-        } else if (vb.rlActionBar.visibility != View.VISIBLE) {
-            showMenuOverlay()
         } else {
-            hideMenuOverlay()
+            Toast.makeText(
+                this,
+                "Press Back Again To Refresh Page",
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
 
@@ -464,9 +544,14 @@ open class MainActivity : AppCompatActivity(), ActionBar.Callback {
         }
 
         val currentTab = tabsModel.currentTab.value
-        if (currentTab == null || currentTab.url == settingsModel.homePage) {
-            showMenuOverlay()
+        if (currentTab == null) {
+            hideMenuOverlay()
         }
+
+        hideMenuOverlay()
+        vb.rlActionBar.visibility = View.GONE
+        vb.llBottomPanel.visibility = View.GONE
+
         if (autoUpdateModel.needAutoCheckUpdates &&
             autoUpdateModel.updateChecker.versionCheckResult == null &&
                 !autoUpdateModel.lastUpdateNotificationTime.sameDay(Calendar.getInstance())) {
@@ -479,20 +564,23 @@ open class MainActivity : AppCompatActivity(), ActionBar.Callback {
     }
 
     private fun handleIntent(intent: Intent) {
-        Log.d(TAG, "handleIntent: " + intent.data)
-        if (intent.getBooleanExtra("com.phlox.tvwebbrowser.EXTRA_OPEN_IN_SAME_TAB", false) &&
-            tabsModel.tabsStates.isNotEmpty()) {
+        val url = intent.data?.toString() ?: settingsModel.homePage
+
+        if (tabsModel.tabsStates.isEmpty()) {
+            openInNewTab(
+                url,
+                0,
+                needToHideMenuOverlay = true,
+                navigateImmediately = true
+            )
+        } else {
             if (tabsModel.currentTab.value == null) {
                 changeTab(tabsModel.tabsStates[0])
             }
-            navigate(intent.data.toString())
-            return
+            navigate(url)
         }
 
-        openInNewTab(
-            intent.data.toString(), tabsModel.tabsStates.size, needToHideMenuOverlay = true,
-            navigateImmediately = true
-        )
+        hideMenuOverlay()
     }
 
     private fun openInNewTab(url: String?, index: Int = 0, needToHideMenuOverlay: Boolean = true, navigateImmediately: Boolean): WebEngine? {
@@ -693,6 +781,17 @@ open class MainActivity : AppCompatActivity(), ActionBar.Callback {
 
     override fun onResume() {
         super.onResume()
+
+        if (resetToHomeWhenResumed) {
+            resetToHomeWhenResumed = false
+            lastHomeBackPressTime = 0L
+
+            tabsModel.currentTab.value?.webEngine?.loadUrl(settingsModel.homePage)
+
+            hideMenuOverlay()
+            vb.rlActionBar.visibility = View.GONE
+            vb.llBottomPanel.visibility = View.GONE
+        }
         val intentFilter = IntentFilter("android.net.conn.CONNECTIVITY_CHANGE")
         registerReceiver(mConnectivityChangeReceiver, intentFilter)
         tabsModel.currentTab.value?.webEngine?.onResume()
@@ -905,7 +1004,7 @@ open class MainActivity : AppCompatActivity(), ActionBar.Callback {
         } else if (vb.llBottomPanel.isVisible && !vb.rlActionBar.isVisible) {
             hideBottomPanel()
         } else {
-            toggleMenu()
+            navigateBack()
         }
     }
 
@@ -1543,5 +1642,10 @@ open class MainActivity : AppCompatActivity(), ActionBar.Callback {
         override fun onServiceDisconnected(p0: ComponentName?) {
             downloadService = null
         }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        resetToHomeWhenResumed = true
     }
 }

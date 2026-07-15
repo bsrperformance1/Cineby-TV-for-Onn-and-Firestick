@@ -64,6 +64,14 @@ open class WebViewEx(context: Context, val callback: Callback, val jsInterface: 
         val WIDEVINE_UUID = UUID(-0x121074568629b532L,-0x5c37d8232ae2de13L)
     }
 
+    init {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            setRendererPriorityPolicy(
+                RENDERER_PRIORITY_IMPORTANT,
+                false
+            )
+        }
+    }
     private var virtualCursorMode: Boolean = true
     private var genericInjects: String? = null
     private var webChromeClient_: WebChromeClient
