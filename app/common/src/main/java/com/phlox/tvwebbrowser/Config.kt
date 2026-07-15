@@ -186,7 +186,7 @@ class Config(val prefs: SharedPreferences) {
         }
 
     var allowAutoplayMedia: Boolean
-        get() = prefs.getBoolean(ALLOW_AUTOPLAY_MEDIA, false)
+        get() = prefs.getBoolean(ALLOW_AUTOPLAY_MEDIA, true)
         set(value) {
             prefs.edit().putBoolean(ALLOW_AUTOPLAY_MEDIA, value).apply()
         }
